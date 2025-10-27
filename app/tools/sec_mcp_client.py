@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncContextManager, Dict, List, Optional
 
 try:
     from mcp.client.session import ClientSession
@@ -22,6 +22,7 @@ class SECTools:
         self.proc: Optional[subprocess.Popen[bytes]] = None
         self.session: Optional[ClientSession] = None
         self._lock = asyncio.Lock()
+        self._session_cm: Optional[AsyncContextManager[ClientSession]] = None
 
     async def _ensure(self) -> None:
         if self.session is not None:
@@ -41,7 +42,8 @@ class SECTools:
             )
             if stdio_client is None:
                 raise RuntimeError("La librería MCP no está disponible")
-            self.session = await stdio_client(self.proc.stdin, self.proc.stdout)  # type: ignore[arg-type]
+            self._session_cm = stdio_client(self.proc.stdin, self.proc.stdout)  # type: ignore[arg-type]
+            self.session = await self._session_cm.__aenter__()
             await self.session.initialize()
 
     async def _call(self, tool_name: str, **kwargs: Any) -> Any:
@@ -102,6 +104,9 @@ class SECTools:
     async def shutdown(self) -> None:
         if self.session:
             await self.session.close()
+        if self._session_cm is not None:
+            await self._session_cm.__aexit__(None, None, None)
+            self._session_cm = None
         if self.proc:
             self.proc.terminate()
             try:
