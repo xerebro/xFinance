@@ -3,7 +3,8 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 from starlette.responses import ORJSONResponse, Response
 
 
