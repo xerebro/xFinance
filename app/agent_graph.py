@@ -87,8 +87,7 @@ async def plan_node(state: AgentState) -> AgentState:
     plan = await _llm_plan(state.get("query", ""), state.get("companies", []))
     messages = list(state.get("messages", []))
     messages.append({"role": "system", "content": plan})
-    state["messages"] = messages
-    return state
+    return {"messages": messages}
 
 
 async def resolve_entities(state: AgentState) -> AgentState:
@@ -107,20 +106,18 @@ async def resolve_entities(state: AgentState) -> AgentState:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to resolve entity", exc_info=exc)
         companies.append(comp)
-    state["companies"] = companies
     messages = list(state.get("messages", []))
     messages.append({
         "role": "status",
         "content": "Identidades de compañías resueltas.",
     })
-    state["messages"] = messages
-    return state
+    return {"companies": companies, "messages": messages}
 
 
 async def fetch_edgar(state: AgentState) -> AgentState:
     retrieval = state.get("retrieval")
     if not retrieval:
-        return state
+        return {}
     extracts: List[SectionExtract] = list(state.get("extracts", []))
     for company in state.get("companies", []):
         if not company.cik:
@@ -156,14 +153,12 @@ async def fetch_edgar(state: AgentState) -> AgentState:
                 extracts.append(section)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Failed to process filing", exc_info=exc)
-    state["extracts"] = extracts
     messages = list(state.get("messages", []))
     messages.append({
         "role": "status",
         "content": f"Descarga de filings completada ({len(extracts)} extractos).",
     })
-    state["messages"] = messages
-    return state
+    return {"extracts": extracts, "messages": messages}
 
 
 async def fetch_yahoo(state: AgentState) -> AgentState:
@@ -179,14 +174,12 @@ async def fetch_yahoo(state: AgentState) -> AgentState:
             market[ticker] = snapshot
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to fetch Yahoo snapshot", exc_info=exc)
-    state["market"] = market
     messages = list(state.get("messages", []))
     messages.append({
         "role": "status",
         "content": "Métricas de mercado recuperadas de Yahoo Finance.",
     })
-    state["messages"] = messages
-    return state
+    return {"market": market, "messages": messages}
 
 
 async def analyze(state: AgentState) -> AgentState:
@@ -223,34 +216,34 @@ async def analyze(state: AgentState) -> AgentState:
         else:
             analysis_text = _heuristic_analysis(extracts, market)
         analysis[ticker] = analysis_text
-    state["analysis"] = analysis
     messages = list(state.get("messages", []))
     messages.append({
         "role": "status",
         "content": "Análisis sintetizado.",
     })
-    state["messages"] = messages
-    return state
+    return {"analysis": analysis, "messages": messages}
 
 
 async def write_report(state: AgentState) -> AgentState:
     markdown, cites = build_markdown_report(state)
-    state["markdown"] = markdown
-    state.setdefault("citations", [])
-    state["citations"].extend(cites)
-    state.setdefault("combined_summary", "")
-    if not state["combined_summary"]:
+    citations = list(state.get("citations", [])) + list(cites)
+    combined_summary = state.get("combined_summary", "")
+    if not combined_summary:
         combined = []
         for ticker, summary in state.get("analysis", {}).items():
             combined.append(f"### {ticker}\n{summary}")
-        state["combined_summary"] = "\n\n".join(combined)
+        combined_summary = "\n\n".join(combined)
     messages = list(state.get("messages", []))
     messages.append({
         "role": "final",
         "content": "Reporte generado.",
     })
-    state["messages"] = messages
-    return state
+    return {
+        "markdown": markdown,
+        "citations": citations,
+        "combined_summary": combined_summary,
+        "messages": messages,
+    }
 
 
 def _heuristic_analysis(extracts: List[SectionExtract], market: Optional[MarketSnapshot]) -> str:
@@ -286,8 +279,7 @@ builder.set_entry_point("Plan")
 
 builder.add_edge("Plan", "ResolveEntities")
 builder.add_edge("ResolveEntities", "FetchEDGAR")
-builder.add_edge("ResolveEntities", "FetchYahoo")
-builder.add_edge("FetchEDGAR", "Analyze")
+builder.add_edge("FetchEDGAR", "FetchYahoo")
 builder.add_edge("FetchYahoo", "Analyze")
 builder.add_edge("Analyze", "WriteReport")
 builder.add_edge("WriteReport", END)

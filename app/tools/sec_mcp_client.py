@@ -1,50 +1,50 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import subprocess
 from pathlib import Path
-from typing import Any, AsyncContextManager, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-try:
-    from mcp.client.session import ClientSession
-    from mcp.client.stdio import stdio_client
-except Exception as exc:  # noqa: BLE001
-    ClientSession = Any  # type: ignore[assignment]
-    stdio_client = None  # type: ignore[assignment]
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import get_default_environment, stdio_client
 
 
 class SECTools:
     """Cliente asíncrono para el servidor MCP de la SEC."""
 
     def __init__(self) -> None:
-        self.proc: Optional[subprocess.Popen[bytes]] = None
+        self._session_cm: Optional[Any] = None
+        self._client_session_cm: Optional[Any] = None
         self.session: Optional[ClientSession] = None
-        self._lock = asyncio.Lock()
-        self._session_cm: Optional[AsyncContextManager[ClientSession]] = None
 
     async def _ensure(self) -> None:
+        """Inicializa una sesión MCP por stdio hacia el server 'sec_edgar'."""
         if self.session is not None:
             return
-        async with self._lock:
-            if self.session is not None:
-                return
-            server_path = Path(__file__).resolve().parents[2] / "mcp_servers" / "sec_edgar" / "main.py"
-            env = os.environ.copy()
-            env.setdefault("PYTHONUNBUFFERED", "1")
-            self.proc = subprocess.Popen(
-                ["python", str(server_path)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-            )
-            if stdio_client is None:
-                raise RuntimeError("La librería MCP no está disponible")
-            self._session_cm = stdio_client(self.proc.stdin, self.proc.stdout)  # type: ignore[arg-type]
-            self.session = await self._session_cm.__aenter__()
-            await self.session.initialize()
+
+        # Ajusta la ruta si tu server MCP vive en otra carpeta
+        repo_root = Path(__file__).resolve().parents[2]
+        server_path = repo_root / "mcp_servers" / "sec_edgar" / "main.py"
+
+        server = StdioServerParameters(
+            command="python",
+            args=[str(server_path)],
+            cwd=str(server_path.parent),
+            env={
+                **get_default_environment(),
+                "SEC_USER_AGENT": os.getenv(
+                    "SEC_USER_AGENT",
+                    "xFinance/0.1 (contacto@example.com)",
+                ),
+            },
+        )
+
+        # Correcto: pasar StdioServerParameters a stdio_client
+        self._session_cm = stdio_client(server)
+        stdio, write = await self._session_cm.__aenter__()
+        self._client_session_cm = ClientSession(stdio, write)
+        self.session = await self._client_session_cm.__aenter__()
+        await self.session.initialize()
 
     async def _call(self, tool_name: str, **kwargs: Any) -> Any:
         await self._ensure()
@@ -102,16 +102,10 @@ class SECTools:
         return await self._call("get_companyfacts", cik=cik)
 
     async def shutdown(self) -> None:
-        if self.session:
-            await self.session.close()
+        if self._client_session_cm is not None:
+            await self._client_session_cm.__aexit__(None, None, None)
+            self._client_session_cm = None
         if self._session_cm is not None:
             await self._session_cm.__aexit__(None, None, None)
             self._session_cm = None
-        if self.proc:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
         self.session = None
-        self.proc = None
